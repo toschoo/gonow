@@ -6,25 +6,38 @@ import "C"
 import(
 	"fmt"
 	"os"
+	"time"
 	"unsafe"
 )
 
+var global_is_initialised bool
+
+func init() {
+	global_is_initialised = (C.nowdb_client_init() != 0)
+}
+
+func Leave() {
+	if global_is_initialised {
+		C.nowdb_client_close()
+	}
+}
+
 const (
 	OK = 0
-	_EOF = 8
+	_eof = 8
 )
 
 const (
-	ACK = 0x4f
-	NOK = 0x4e
-)
-
-const (
-	nothing = 0
 	status  = 0x21
 	report  = 0x22
 	row     = 0x23
 	cursor  = 0x24
+)
+
+const (
+	InvalidT = -1
+	StatusT = 1
+	CursorT = 2
 )
 
 const (
@@ -39,18 +52,7 @@ const (
 )
 
 var EOF = eof()
-
-type EOFError struct {
-	what string
-}
-
-func eof() *EOFError {
-	return new(EOFError)
-}
-
-func (e EOFError) Error() string {
-	return "end-of-file"
-}
+var NULL = null()
 
 type ClientError struct {
 	what string
@@ -63,6 +65,27 @@ func newClientError(s string) (e ClientError) {
 
 func (e ClientError) Error() string {
 	return e.what
+}
+
+func eof() ClientError{
+	return newClientError("end-of-file")
+}
+
+type TypeError struct {
+	what string
+}
+
+func newTypeError(s string) (e TypeError) {
+	e.what = s
+	return
+}
+
+func (e TypeError) Error() string {
+	return e.what
+}
+
+func null() TypeError{
+	return newTypeError("NULL")
 }
 
 type ServerError struct {
@@ -78,16 +101,16 @@ func (e ServerError) Error() string {
 	return e.what
 }
 
-var global_is_initialised bool
+const npersec = 1000000000
 
-func init() {
-	global_is_initialised = (C.nowdb_client_init() != 0)
+func Now2Go(n int64) time.Time {
+	s := n / npersec
+	ns := n - s * npersec
+	return time.Unix(s,ns).UTC()
 }
 
-func Leave() {
-	if global_is_initialised {
-		C.nowdb_client_close()
-	}
+func Go2Now(t time.Time) int64 {
+	return t.UnixNano()
 }
 
 type Connection struct {
@@ -135,14 +158,35 @@ type Result struct {
 	t  int
 }
 
-func r2err(c int, msg string) ServerError {
-	return newServerError(fmt.Sprintf("%d: %s", c, msg))
+func (r *Result) TellType() int {
+	t := C.nowdb_result_type(r.cs)
+	switch(t) {
+	case status: fallthrough
+	case report: return StatusT
+	case row: fallthrough
+	case cursor: return CursorT
+	default: return -1
+	}
+}
+
+func (r *Result) OK() bool {
+	return (C.nowdb_result_errcode(r.cs) == OK)
+}
+
+func (r *Result) Error() string {
+	return fmt.Sprintf("%d: %s", C.nowdb_result_errcode(r.cs),
+	                             C.nowdb_result_details(r.cs))
+}
+
+func r2err(r C.nowdb_result_t) ServerError {
+	return newServerError(fmt.Sprintf("%d: %s",
+		int(C.nowdb_result_errcode(r)),
+		C.GoString(C.nowdb_result_details(r))))
 }
 
 func (c *Connection) Execute(stmt string) (*Result, error) {
 	var cr C.nowdb_result_t
 
-	fmt.Printf("executing '%s'\n", stmt)
 	rc := C.nowdb_exec_statement(c.cc, C.CString(stmt), &cr)
 	if rc != OK {
 		fmt.Fprintf(os.Stderr, "cannot execute: %d\n", rc)
@@ -156,7 +200,7 @@ func (c *Connection) Execute(stmt string) (*Result, error) {
 	r.t = int(C.nowdb_result_type(cr))
 
 	if int(C.nowdb_result_status(cr)) != OK {
-		err := r2err(int(C.nowdb_result_errcode(cr)), C.GoString(C.nowdb_result_details(cr)))
+		err := r2err(cr)
 		r.Destroy()
 		return nil, err
 	}
@@ -187,6 +231,10 @@ type Cursor struct {
 	cc C.nowdb_cursor_t
 	row C.nowdb_row_t
 	first bool
+}
+
+func cur2res(c C.nowdb_cursor_t) C.nowdb_result_t {
+	return C.nowdb_result_t(unsafe.Pointer(c))
 }
 
 func (r *Result) Open() (*Cursor, error) {
@@ -260,11 +308,10 @@ func (c *Cursor) Fetch() (*Row, error) {
 			rc = C.nowdb_result_errcode(unsafe.Pointer(c.cc))
 		}
 		if rc != OK {
-			if rc == _EOF {
+			if rc == _eof {
 				return nil, EOF
 			}
-			return nil, r2err(int(C.nowdb_result_errcode(unsafe.Pointer(c.cc))),
-			           C.GoString(C.nowdb_result_details(unsafe.Pointer(c.cc))))
+			return nil, r2err(cur2res(c.cc))
 		}
 		c.row = C.nowdb_cursor_row(c.cc)
 		return makeRow(c)
@@ -272,20 +319,91 @@ func (c *Cursor) Fetch() (*Row, error) {
 	return nil, EOF
 }
 
-func (r *Row) Field(idx int) interface{} {
+func (r *Row) Field(idx int) (int, interface{}) {
 	var t C.int
 	v := C.nowdb_row_field(r.cr, C.int(idx), &t)
 	switch(t) {
-		case TEXT: return C.GoString((*C.char)(unsafe.Pointer(v)))
-		default: return unsafe.Pointer(v)
+	case NOTHING: return NOTHING, nil
+	case TEXT: return int(t), C.GoString((*C.char)(v))
+	case DATE: fallthrough
+	case TIME: fallthrough
+	case INT:  return int(t), *(*int64)(v)
+	case UINT: return int(t), *(*uint64)(v)
+	case FLOAT: return int(t), *(*float64)(v)
+	case BOOL:
+		x := *(*C.char)(v)
+		if x == 0 {
+			return int(t), false
+		} else {
+			return int(t), true
+		}
+
+	default: return NOTHING, nil
 	}
 }
 
 func (r *Row) String(idx int) (string, error) {
-	var t C.int
-	v := C.nowdb_row_field(r.cr, C.int(idx), &t)
-	if t != TEXT {
-		return "", newClientError("not a string")
+	t, v := r.Field(idx)
+	if t == NOTHING {
+		return "", NULL
 	}
-	return C.GoString((*C.char)(unsafe.Pointer(v))), nil
+	if t != TEXT {
+		return "", newTypeError("not a string")
+	}
+	return v.(string), nil
+}
+
+func (r *Row) intValue(idx int, isTime bool) (int64, error) {
+	t, v := r.Field(idx)
+	if t == NOTHING {
+		return 0, NULL
+	}
+	if isTime && t != TIME && t != DATE && t != INT {
+		return 0, newTypeError("not time value")
+	}
+	if !isTime && t != INT {
+		return 0, newTypeError("not an int value")
+	}
+	return v.(int64), nil
+}
+
+func (r *Row) Time(idx int) (int64, error) {
+	return r.intValue(idx, true)
+}
+
+func (r *Row) Int(idx int) (int64, error) {
+	return r.intValue(idx, false)
+}
+
+func (r *Row) UInt(idx int) (uint64, error) {
+	t, v := r.Field(idx)
+	if t == NOTHING {
+		return 0, NULL
+	}
+	if t != UINT {
+		return 0, newTypeError("not an uint value")
+	}
+	return v.(uint64), nil
+}
+
+func (r *Row) Float(idx int) (float64, error) {
+	t, v := r.Field(idx)
+	if t == NOTHING {
+		return 0, NULL
+	}
+	if t != FLOAT {
+		return 0, newTypeError("not a float value")
+	}
+	return v.(float64), nil
+}
+
+func (r *Row) Bool(idx int) (bool, error) {
+	t, v := r.Field(idx)
+	if t == NOTHING {
+		return false, NULL
+	}
+	if t != BOOL {
+		return false, newTypeError("not a bool value")
+	}
+	return v.(bool), nil
 }
