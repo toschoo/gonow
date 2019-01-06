@@ -319,8 +319,18 @@ func (c *Cursor) Fetch() (*Row, error) {
 	return nil, EOF
 }
 
+func (r *Row) Count() int {
+	if r.cr == nil {
+		return 0
+	}
+	return int(C.nowdb_row_count(r.cr))
+}
+
 func (r *Row) Field(idx int) (int, interface{}) {
 	var t C.int
+	if r.cr == nil {
+		return NOTHING, nil
+	}
 	v := C.nowdb_row_field(r.cr, C.int(idx), &t)
 	switch(t) {
 	case NOTHING: return NOTHING, nil
