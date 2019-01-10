@@ -1,3 +1,30 @@
+// gnow is a simple nowdb client.
+//
+// A typical workflow is as follows:
+//
+// 	func myquery(srv string, port string, usr string, pwd string) {
+// 		c, err := Connect(srv, port, usr, pwd)
+//     		if err != nil {
+//			// error handling
+//		}
+//		defer c.Close()
+//		err = c.Use("mydb")
+//		if err != nil {
+//     	 		// error handling
+//		}
+//		res, err = c.Execute("select count(*) from mytable")
+//		if err != nil {
+//     		 	// error handling
+//		}
+//		cur, err := res.Open()
+//		if err != nil {
+//     		 	// error handling
+//		}
+//		defer cur.Close()
+//		for row, cerr := cur.Fetch(); cerr != nil; row, cerr = cur.Fetch() {
+//			fmt.Printf("Count: %d\n", row.UInt(0))
+//		}
+//	}
 package gnow
 // #include <nowdb/nowclient.h>
 // #include <stdlib.h>
@@ -16,6 +43,8 @@ func init() {
 	global_is_initialised = (C.nowdb_client_init() != 0)
 }
 
+// Leave shall be called immediately before program exit.
+// It frees resources allocated by the C library on initialisation.
 func Leave() {
 	if global_is_initialised {
 		C.nowdb_client_close()
@@ -23,6 +52,7 @@ func Leave() {
 }
 
 const (
+	// success status code
 	OK = 0
 	_eof = 8
 )
@@ -34,26 +64,43 @@ const (
 	cursor  = 0x24
 )
 
+// Return Type indicators
 const (
+	// Invalid or unknown return type
 	InvalidT = -1
+	// Status return type (ok/not ok)
 	StatusT = 1
+	// Cursor return type
 	CursorT = 2
 )
 
+// Data type indicators
 const (
+	// NULL
 	NOTHING = 0
+	// Text type
 	TEXT = 1
+	// Time type
 	DATE = 2
+	// Time type
 	TIME = 3
+	// Float type
 	FLOAT= 4
+	// Int type
 	INT  = 5
+	// Uint type
 	UINT = 6
+	// Bool type
 	BOOL = 9
 )
 
+// EOF error
 var EOF = eof()
+
+// NULL error
 var NULL = null()
 
+// Generic Error Type
 type ClientError struct {
 	what string
 }
@@ -71,6 +118,7 @@ func eof() ClientError{
 	return newClientError("end-of-file")
 }
 
+// Type error
 type TypeError struct {
 	what string
 }
@@ -88,6 +136,7 @@ func null() TypeError{
 	return newTypeError("NULL")
 }
 
+// Error type for server-side errors
 type ServerError struct {
 	what string
 }
@@ -103,20 +152,30 @@ func (e ServerError) Error() string {
 
 const npersec = 1000000000
 
+// Now2Go converts a nowdb time value
+// to a go time.Time object.
 func Now2Go(n int64) time.Time {
 	s := n / npersec
 	ns := n - s * npersec
 	return time.Unix(s,ns).UTC()
 }
 
+// Go2Now converts a go time.Time object
+// to a nowdb time value
 func Go2Now(t time.Time) int64 {
 	return t.UnixNano()
 }
 
+// Connection type
 type Connection struct {
    cc C.nowdb_con_t
 }
 
+// Connect creates a connection to the database server.
+// It expects the server name and port and
+// a user name and password.
+// It returns a new Connection object or
+// error on failure.
 func Connect(server string, port string, usr string, pwd string) (*Connection, error) {
 	var cc C.nowdb_con_t
 
@@ -137,6 +196,7 @@ func Connect(server string, port string, usr string, pwd string) (*Connection, e
 	return c, nil
 }
 
+// Close closes the connection.
 func (c *Connection) Close() error {
 	if c.cc == nil {
 		return nil
@@ -153,11 +213,17 @@ func (c *Connection) Close() error {
 	return nil
 }
 
+// Result is a polymorphic type to
+// abstract data results.
+// It is either a Status (ok or not ok)
+// or a Cursor.
 type Result struct {
 	cs C.nowdb_result_t
 	t  int
 }
 
+// Tell type returns the result type indicator
+// of this result object.
 func (r *Result) TellType() int {
 	t := C.nowdb_result_type(r.cs)
 	switch(t) {
@@ -169,21 +235,30 @@ func (r *Result) TellType() int {
 	}
 }
 
+// OK returns true if the status is ok
+// and false otherwise.
 func (r *Result) OK() bool {
 	return (C.nowdb_result_errcode(r.cs) == OK)
 }
 
+// Error returns an error reflecting the status
+// of the result.
 func (r *Result) Error() string {
 	return fmt.Sprintf("%d: %s", C.nowdb_result_errcode(r.cs),
 	                             C.nowdb_result_details(r.cs))
 }
 
+// transform a result into a server error
 func r2err(r C.nowdb_result_t) ServerError {
 	return newServerError(fmt.Sprintf("%d: %s",
 		int(C.nowdb_result_errcode(r)),
 		C.GoString(C.nowdb_result_details(r))))
 }
 
+// Execute sends a SQL statement to the database.
+// It retuns a result or an error.
+// That means: Result is always ok;
+// if there was an error result will be nil.
 func (c *Connection) Execute(stmt string) (*Result, error) {
 	var cr C.nowdb_result_t
 
@@ -207,6 +282,9 @@ func (c *Connection) Execute(stmt string) (*Result, error) {
 	return r, nil
 }
 
+// Use defines the database to be used
+// in all subsequent statements.
+// Use must be called before any other statement.
 func (c *Connection) Use(db string) error {
 	stmt := fmt.Sprintf("use %s", db)
 	r, err := c.Execute(stmt)
@@ -219,6 +297,17 @@ func (c *Connection) Use(db string) error {
 	return nil
 }
 
+// Destroy releases all resources
+// allocated by the C library for
+// this result. I must be called
+// to avoid memory leaks in the
+// C library.
+// If the result is a cursor
+// and the cursor was opened
+// and closed, it is not necessary
+// to call Destroy on the result
+// (but it does not harm to call
+// Destroy addionally).
 func (r *Result) Destroy() {
 	if r.cs == nil {
 		return
@@ -227,6 +316,14 @@ func (r *Result) Destroy() {
 	r.cs = nil
 }
 
+// Cursor is an iterator over
+// a resultset. It is created
+// from an existing result.
+// It inherits all resources
+// from that result.
+// Closing a cursor releases
+// all resources (server- and
+// client-side) assigned to it.
 type Cursor struct {
 	cc C.nowdb_cursor_t
 	row C.nowdb_row_t
@@ -237,6 +334,9 @@ func cur2res(c C.nowdb_cursor_t) C.nowdb_result_t {
 	return C.nowdb_result_t(unsafe.Pointer(c))
 }
 
+// Open creates a cursor from a result.
+// The cursor inherits all
+// resources from the result.
 func (r *Result) Open() (*Cursor, error) {
 	if r.t != cursor && r.t != row {
 		return nil, newClientError("not a cursor")
@@ -260,6 +360,16 @@ func (r *Result) Open() (*Cursor, error) {
 	return c, nil
 }
 
+// Close releases all resources assigned to the cursor
+// and the result form which it was opened.
+// A cursor shall be closed to avoid memory leaks
+// in the C library and resources in the server
+// (which, otherwise, would be pending until the end
+// of the session).
+// When the cursor was closed, it is not necessary
+// to destroy the corresponding result
+// (but there is also no harm in destroying
+// the result additionally).
 func (c *Cursor) Close() {
 	if c.row != nil {
 		if c.cc == nil {
@@ -276,6 +386,7 @@ func (c *Cursor) Close() {
 	}
 }
 
+// The Row type represents one row in a resultset.
 type Row struct {
 	cr C.nowdb_row_t
 }
@@ -286,6 +397,8 @@ func makeRow(c *Cursor) (*Row, error) {
 	return r, nil
 }
 
+// Fetch returns one row of the result set or error
+// (but never both). 
 func (c *Cursor) Fetch() (*Row, error) {
 	if c.row != nil {
 		if c.first {
@@ -319,6 +432,7 @@ func (c *Cursor) Fetch() (*Row, error) {
 	return nil, EOF
 }
 
+// Count returns the number of fields in the row.
 func (r *Row) Count() int {
 	if r.cr == nil {
 		return 0
@@ -326,6 +440,10 @@ func (r *Row) Count() int {
 	return int(C.nowdb_row_count(r.cr))
 }
 
+// Field returns the type indicator and
+// the content of the field with index idx
+// starting to count from 0.
+// If idx is out of range, NOTHING is returned.
 func (r *Row) Field(idx int) (int, interface{}) {
 	var t C.int
 	if r.cr == nil {
@@ -352,6 +470,10 @@ func (r *Row) Field(idx int) (int, interface{}) {
 	}
 }
 
+// String returns the field with index 'idx'
+// as string. If that field is not a string,
+// a type error is returned.
+// If idx is out of range, NOTHING is returned.
 func (r *Row) String(idx int) (string, error) {
 	t, v := r.Field(idx)
 	if t == NOTHING {
@@ -369,7 +491,7 @@ func (r *Row) intValue(idx int, isTime bool) (int64, error) {
 		return 0, NULL
 	}
 	if isTime && t != TIME && t != DATE && t != INT {
-		return 0, newTypeError("not time value")
+		return 0, newTypeError("not a time value")
 	}
 	if !isTime && t != INT {
 		return 0, newTypeError("not an int value")
@@ -377,14 +499,26 @@ func (r *Row) intValue(idx int, isTime bool) (int64, error) {
 	return v.(int64), nil
 }
 
+// Time returns the field with index 'idx'
+// as time value. If that field is not a time value,
+// a type error is returned.
+// If idx is out of range, NOTHING is returned.
 func (r *Row) Time(idx int) (int64, error) {
 	return r.intValue(idx, true)
 }
 
+// Int returns the field with index 'idx'
+// as int value. If that field is not an int,
+// a type error is returned.
+// If idx is out of range, NOTHING is returned.
 func (r *Row) Int(idx int) (int64, error) {
 	return r.intValue(idx, false)
 }
 
+// UInt returns the field with index 'idx'
+// as uint value. If that field is not a uint,
+// a type error is returned.
+// If idx is out of range, NOTHING is returned.
 func (r *Row) UInt(idx int) (uint64, error) {
 	t, v := r.Field(idx)
 	if t == NOTHING {
@@ -396,6 +530,10 @@ func (r *Row) UInt(idx int) (uint64, error) {
 	return v.(uint64), nil
 }
 
+// Float returns the field with index 'idx'
+// as float value. If that field is not a float,
+// a type error is returned.
+// If idx is out of range, NOTHING is returned.
 func (r *Row) Float(idx int) (float64, error) {
 	t, v := r.Field(idx)
 	if t == NOTHING {
@@ -407,6 +545,10 @@ func (r *Row) Float(idx int) (float64, error) {
 	return v.(float64), nil
 }
 
+// Bool returns the field with index 'idx'
+// as bool value. If that field is not a bool,
+// a type error is returned.
+// If idx is out of range, NOTHING is returned.
 func (r *Row) Bool(idx int) (bool, error) {
 	t, v := r.Field(idx)
 	if t == NOTHING {
