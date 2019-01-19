@@ -244,8 +244,16 @@ func (r *Result) OK() bool {
 // Error returns an error reflecting the status
 // of the result.
 func (r *Result) Error() string {
-	return fmt.Sprintf("%d: %s", C.nowdb_result_errcode(r.cs),
-	                             C.nowdb_result_details(r.cs))
+	if C.nowdb_result_details(r.cs) == nil {
+		return fmt.Sprintf("%d", int(C.nowdb_result_errcode(r.cs)))
+	}
+	return fmt.Sprintf("%d: %s", int(C.nowdb_result_errcode(r.cs)),
+		             C.GoString(C.nowdb_result_details(r.cs)))
+}
+
+// Errcode returns the numerical error code related to this result
+func (r *Result) Errcode() int {
+	return int(C.nowdb_result_errcode(r.cs))
 }
 
 // transform a result into a server error
@@ -263,8 +271,7 @@ func (c *Connection) Execute(stmt string) (*Result, error) {
 	var cr C.nowdb_result_t
 
 	rc := C.nowdb_exec_statement(c.cc, C.CString(stmt), &cr)
-	if rc != OK {
-		fmt.Fprintf(os.Stderr, "cannot execute: %d\n", rc)
+	if rc != OK || cr == nil {
 		m := fmt.Sprintf("%d", rc) // explain!
 		return nil, newServerError(m)
 	}
