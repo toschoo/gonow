@@ -380,14 +380,14 @@ func (r *Result) Open() (*Cursor, error) {
 func (c *Cursor) Close() {
 	if c.row != nil {
 		if c.cc == nil {
-			C.nowdb_result_destroy(unsafe.Pointer(c.row))
+			C.nowdb_result_destroy(C.nowdb_result_t(unsafe.Pointer(c.row)))
 		}
 		c.row = nil
 	}
 	if c.cc != nil {
 		rc := C.nowdb_cursor_close(c.cc)
 		if rc != OK {
-			C.nowdb_result_destroy(unsafe.Pointer(c.cc))
+			C.nowdb_result_destroy(C.nowdb_result_t(unsafe.Pointer(c.cc)))
 		}
 		c.cc = nil
 	}
@@ -415,7 +415,7 @@ func (c *Cursor) Fetch() (*Row, error) {
 		rc := C.nowdb_row_next(c.row)
 		if rc != OK {
 			if c.cc == nil {
-				C.nowdb_result_destroy(unsafe.Pointer(c.row))
+				C.nowdb_result_destroy(C.nowdb_result_t(unsafe.Pointer(c.row)))
 			}
 			c.row = nil
 		} else {
@@ -425,7 +425,7 @@ func (c *Cursor) Fetch() (*Row, error) {
 	if c.cc != nil {
 		rc := C.nowdb_cursor_fetch(c.cc)
 		if rc == OK {
-			rc = C.nowdb_result_errcode(unsafe.Pointer(c.cc))
+			rc = C.nowdb_result_errcode(C.nowdb_result_t(unsafe.Pointer(c.cc)))
 		}
 		if rc != OK {
 			if rc == _eof {
