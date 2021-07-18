@@ -367,6 +367,23 @@ func (r *Result) Open() (*Cursor, error) {
 	return c, nil
 }
 
+// One results one row from the result and discards all other rows.
+// Conceptually, it opens a cursor, fetches once, closes the cursor
+// and returns the row. The main use case for this method
+// is results that return only one row (e.g. select count(*)).
+func (r *Result) One() (*Row, error) {
+	cur, err := r.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close()
+	row, err := cur.Fetch()
+	if err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
 // Close releases all resources assigned to the cursor
 // and the result form which it was opened.
 // A cursor shall be closed to avoid memory leaks
