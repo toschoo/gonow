@@ -1,7 +1,7 @@
 # Go NoWDB Client Binding
 
 This is the [NoWDB](https://github.com/toschoo/nowdb) client binding 
-for Go language.
+for the Go language.
 
 The code is licensed under the LGPL V2 with the static binding exception.
 
